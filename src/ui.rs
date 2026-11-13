@@ -1003,11 +1003,14 @@ impl Render for Inbox {
                             .child(
                                 Button::new("check-updates")
                                     .xsmall()
-                                    .label(match &update_status {
-                                        UpdateStatus::Checking => "检查中…",
-                                        UpdateStatus::Installed(_) => "重启后生效",
+                                    .icon(IconName::RefreshCw)
+                                    .loading(matches!(&update_status, UpdateStatus::Checking))
+                                    .tooltip(match &update_status {
+                                        UpdateStatus::Checking => "正在检查更新…",
+                                        UpdateStatus::Installed(_) => "更新已安装，重启后生效",
                                         _ => "检查更新",
                                     })
+                                    .accessibility_label("检查更新")
                                     .disabled(!update_status.can_check())
                                     .on_click(cx.listener(|s, _, _, cx| {
                                         s.updates.check_now();
