@@ -61,4 +61,4 @@ GitHub Actions 在推送 main / PR 时执行格式、测试、Clippy 和 release
 2. 提交并推送 main。
 3. 创建与 Cargo 版本一致的标签，例如 `git tag v0.2.0`，然后 `git push origin v0.2.0`。
 
-`roc-request-bin-<target>.zip` 是自动更新包；`Roc-Request-Bin-<target>.zip` 是 macOS `.app` 分发包。
+`roc-request-bin-<target>.zip` 是自动更新包；`Roc-Request-Bin-macos-arm64.zip` 和 `Roc-Request-Bin-macos-amd64.zip` 分别是 Apple Silicon 与 Intel 的 `.app` 分发包。

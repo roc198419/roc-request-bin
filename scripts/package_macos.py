@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import tomllib
+import zipfile
 from pathlib import Path
 
 target = sys.argv[1]
@@ -26,7 +27,18 @@ with (app / "Contents/Info.plist").open("wb") as f:
                   "CFBundlePackageType": "APPL", "CFBundleIconFile": "app.icns",
                   "NSHighResolutionCapable": True, "LSMinimumSystemVersion": "12.0"}, f)
 subprocess.run(["codesign", "--force", "--deep", "--sign", "-", str(app)], check=True)
+architecture = "arm64" if target.startswith("aarch64-") else "amd64"
+# APFS is normally case-insensitive: app/update filenames must differ by more
+# than letter case, or zip updates the app archive rather than creating a new one.
 subprocess.run(["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", str(app),
-                str(dist / f"Roc-Request-Bin-{target}.zip")], check=True)
+                str(dist / f"Roc-Request-Bin-macos-{architecture}.zip")], check=True)
 # zip preserves executable mode, allowing self_update to replace the live binary.
 subprocess.run(["zip", "-j", str((dist / f"roc-request-bin-{target}.zip").resolve()), str(binary)], check=True)
+
+with zipfile.ZipFile(dist / f"roc-request-bin-{target}.zip") as archive:
+    assert archive.namelist() == ["roc-request-bin"], "Update archive must contain only the executable"
+    assert archive.getinfo("roc-request-bin").external_attr >> 16 & 0o111, "Missing executable permissions"
+with zipfile.ZipFile(dist / f"Roc-Request-Bin-macos-{architecture}.zip") as archive:
+    assert "Roc Request Bin.app/Contents/Info.plist" in archive.namelist()
+    assert "Roc Request Bin.app/Contents/MacOS/roc-request-bin" in archive.namelist()
+    assert "roc-request-bin" not in archive.namelist(), "App and update archives must be separate"
