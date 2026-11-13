@@ -15,5 +15,6 @@ d.line([(410,418),(512,520),(614,418)],fill="white",width=60,joint="curve")
 for x,y in [(512,246),(410,418),(614,418),(512,520)]:
     d.ellipse((x-30,y-30,x+30,y+30), fill="white")
 im.save(root / "app.png")
+(root / "tray.rgba").write_bytes(im.resize((32,32), Image.Resampling.LANCZOS).tobytes())
 im.save(root / "app.ico",sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])
 im.save(root / "app.icns",sizes=[(128,128),(256,256),(512,512),(1024,1024)])

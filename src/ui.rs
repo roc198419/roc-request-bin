@@ -44,6 +44,7 @@ pub struct Inbox {
     methods: HashSet<String>,
     form_error: String,
     update_status: Arc<Mutex<String>>,
+    tray: Option<crate::tray::AppTray>,
 }
 impl Inbox {
     pub fn new(store: Store, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -76,16 +77,56 @@ impl Inbox {
             methods: HashSet::from(["GET".into(), "POST".into()]),
             form_error: String::new(),
             update_status: Arc::new(Mutex::new("正在检查更新…".into())),
+            tray: None,
         };
         this.refresh();
         crate::update::start(this.update_status.clone());
-        cx.spawn(async move |view, cx| {
+        let view = cx.entity().downgrade();
+        window.defer(cx, move |window, cx| {
+            if let Some(view) = view.upgrade() {
+                view.update(cx, |this, cx| match crate::tray::AppTray::new() {
+                    Ok(tray) => {
+                        this.tray = Some(tray);
+                        window.on_window_should_close(cx, |window, cx| {
+                            crate::tray::hide(window, cx);
+                            false
+                        });
+                    }
+                    Err(e) => {
+                        this.error = format!("系统托盘不可用：{e}");
+                        cx.notify();
+                    }
+                });
+            }
+        });
+        cx.spawn_in(window, async move |view, cx| {
             loop {
                 cx.background_executor()
                     .timer(Duration::from_millis(500))
                     .await;
                 if view
-                    .update(cx, |this, cx| {
+                    .update_in(cx, |this, window, cx| {
+                        let commands = this
+                            .tray
+                            .as_ref()
+                            .map(|tray| tray.poll())
+                            .unwrap_or_default();
+                        for command in commands {
+                            match command {
+                                crate::tray::Command::Show => crate::tray::show(window, cx),
+                                crate::tray::Command::Hide => crate::tray::hide(window, cx),
+                                crate::tray::Command::Toggle => this.toggle_listener(cx),
+                                crate::tray::Command::Quit => {
+                                    this.listener.take();
+                                    this.tray.take();
+                                    cx.quit();
+                                    return;
+                                }
+                            }
+                        }
+                        if let Some(tray) = this.tray.as_mut() {
+                            tray.set_running(this.listener.is_some());
+                        }
                         if this.store.revision() != this.revision {
                             this.refresh();
                         }
@@ -125,6 +166,9 @@ impl Inbox {
         cx.notify();
     }
     fn toggle_server(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_listener(cx);
+    }
+    fn toggle_listener(&mut self, cx: &mut Context<Self>) {
         if self.listener.take().is_none() {
             let result = self
                 .settings
@@ -161,6 +205,7 @@ impl Inbox {
                 let m = method.clone();
                 checks = checks.child(
                     Checkbox::new(SharedString::from(method.clone()))
+                        .xsmall()
                         .label(method.clone())
                         .checked(this.methods.contains(&method))
                         .on_change(move |checked, window, cx| {
@@ -187,6 +232,7 @@ impl Inbox {
                 )
                 .child(
                     v_flex()
+                        .text_sm()
                         .gap_3()
                         .child("规则名称")
                         .child(Input::new(&this.name))

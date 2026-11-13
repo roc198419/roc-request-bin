@@ -9,7 +9,7 @@ repository = "https://github.com/roc198419/roc-request-bin"
 
 [features]
 default = ["desktop"]
-desktop = ["dep:gpui-kit", "dep:self_update"]
+desktop = ["dep:gpui-kit", "dep:self_update", "dep:tray-icon", "dep:raw-window-handle", "dep:windows"]
 
 [dependencies]
 anyhow = "1"
@@ -30,6 +30,13 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"
+
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+tray-icon = { version = "0.26.1", default-features = false, optional = true }
+
+[target.'cfg(windows)'.dependencies]
+raw-window-handle = { version = "0.6", optional = true }
+windows = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging"], optional = true }
 
 [[bin]]
 name = "roc-request-bin"
