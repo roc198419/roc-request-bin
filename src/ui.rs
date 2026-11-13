@@ -663,7 +663,9 @@ impl Render for Inbox {
                     .child(
                         Button::new(("edit-rule", id as u64))
                             .xsmall()
-                            .label("编辑")
+                            .icon(gpui_kit::assets::IconName::Pencil)
+                            .tooltip("编辑规则")
+                            .accessibility_label("编辑规则")
                             .on_click(cx.listener(move |s, _, window, cx| {
                                 if let Some(rule) = s.rules.iter().find(|r| r.id == id).cloned() {
                                     s.open_rule_form(Some(rule), window, cx);

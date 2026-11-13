@@ -1,6 +1,6 @@
 [package]
 name = "roc-request-bin"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 rust-version = "1.96"
 description = "A native HTTP request inbox for Windows and macOS"
