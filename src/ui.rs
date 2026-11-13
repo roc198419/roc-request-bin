@@ -2,7 +2,7 @@ use gpui_kit::component::{
     button::*,
     checkbox::Checkbox,
     dialog::DialogButtonProps,
-    input::{Input, InputState},
+    input::{Input, InputState, Textarea, TextareaState},
     resizable::{h_resizable, resizable_panel},
     text::TextView,
     *,
@@ -39,6 +39,10 @@ pub struct Inbox {
     error: String,
     name: Entity<InputState>,
     prefix: Entity<InputState>,
+    status_code: Entity<InputState>,
+    content_type: Entity<InputState>,
+    response_body: Entity<TextareaState>,
+    editing_rule: Option<i64>,
     ip: Entity<InputState>,
     port: Entity<InputState>,
     methods: HashSet<String>,
@@ -72,6 +76,10 @@ impl Inbox {
             error: String::new(),
             name: cx.new(|cx| InputState::new(window, cx).placeholder("例如：支付回调")),
             prefix: cx.new(|cx| InputState::new(window, cx).placeholder("/webhooks/")),
+            status_code: cx.new(|cx| InputState::new(window, cx)),
+            content_type: cx.new(|cx| InputState::new(window, cx)),
+            response_body: cx.new(|cx| TextareaState::new(window, cx)),
+            editing_rule: None,
             ip,
             port,
             methods: HashSet::from(["GET".into(), "POST".into()]),
@@ -192,9 +200,40 @@ impl Inbox {
         cx.notify();
     }
     fn rule_dialog(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_rule_form(None, window, cx);
+    }
+    fn open_rule_form(&mut self, rule: Option<Rule>, window: &mut Window, cx: &mut Context<Self>) {
         self.form_error.clear();
-        self.name.update(cx, |s, cx| s.set_value("", window, cx));
-        self.prefix.update(cx, |s, cx| s.set_value("", window, cx));
+        self.editing_rule = rule.as_ref().map(|r| r.id);
+        let response = rule
+            .as_ref()
+            .map(|r| r.response.clone())
+            .unwrap_or_default();
+        self.name.update(cx, |s, cx| {
+            s.set_value(
+                rule.as_ref().map(|r| r.name.clone()).unwrap_or_default(),
+                window,
+                cx,
+            )
+        });
+        self.prefix.update(cx, |s, cx| {
+            s.set_value(
+                rule.as_ref().map(|r| r.prefix.clone()).unwrap_or_default(),
+                window,
+                cx,
+            )
+        });
+        self.methods = rule
+            .as_ref()
+            .map(|r| r.methods.iter().cloned().collect())
+            .unwrap_or_else(|| HashSet::from(["GET".into(), "POST".into()]));
+        self.status_code.update(cx, |s, cx| {
+            s.set_value(response.status_code.to_string(), window, cx)
+        });
+        self.content_type
+            .update(cx, |s, cx| s.set_value(response.content_type, window, cx));
+        self.response_body
+            .update(cx, |s, cx| s.set_value(response.response_body, window, cx));
         let view = cx.entity();
         window.open_alert_dialog(cx, move |dialog, _, cx| {
             let this = view.read(cx);
@@ -223,10 +262,20 @@ impl Inbox {
             }
             let v = view.clone();
             dialog
-                .title("新增匹配规则")
+                .title(if this.editing_rule.is_some() {
+                    "编辑匹配规则"
+                } else {
+                    "新增匹配规则"
+                })
+                .w(px(560.))
+                .margin_top(px(28.))
                 .button_props(
                     DialogButtonProps::default()
-                        .ok_text("创建规则")
+                        .ok_text(if this.editing_rule.is_some() {
+                            "保存规则"
+                        } else {
+                            "创建规则"
+                        })
                         .cancel_text("取消")
                         .show_cancel(true),
                 )
@@ -241,6 +290,26 @@ impl Inbox {
                         .child("HTTP Methods · 至少选择一项")
                         .child(checks)
                         .child(
+                            h_flex()
+                                .gap_3()
+                                .child(
+                                    v_flex()
+                                        .w(px(130.))
+                                        .gap_2()
+                                        .child("Status code")
+                                        .child(Input::new(&this.status_code)),
+                                )
+                                .child(
+                                    v_flex()
+                                        .flex_1()
+                                        .gap_2()
+                                        .child("Content-Type")
+                                        .child(Input::new(&this.content_type)),
+                                ),
+                        )
+                        .child("Response body")
+                        .child(Textarea::new(&this.response_body).h(px(128.)).small())
+                        .child(
                             div()
                                 .text_color(rgb(0xc43c3c))
                                 .child(this.form_error.clone()),
@@ -254,12 +323,30 @@ impl Inbox {
                             .filter(|m| s.methods.contains(**m))
                             .map(|m| m.to_string())
                             .collect();
-                        match s.store.add_rule(
+                        let status_code = match s.status_code.read(cx).value().trim().parse::<u16>()
+                        {
+                            Ok(code) => code,
+                            Err(_) => {
+                                s.form_error = "Status code 必须为 200–599".into();
+                                cx.notify();
+                                return false;
+                            }
+                        };
+                        let response = ResponseConfig {
+                            status_code,
+                            content_type: s.content_type.read(cx).value().trim().into(),
+                            response_body: s.response_body.read(cx).value().into(),
+                        };
+                        match s.store.save_rule(
+                            s.editing_rule,
                             s.name.read(cx).value().as_ref(),
                             s.prefix.read(cx).value().as_ref(),
                             &methods,
+                            &response,
                         ) {
                             Ok(_) => {
+                                s.page = 0;
+                                s.selected_requests.clear();
                                 s.refresh();
                                 cx.notify();
                                 true
@@ -572,6 +659,16 @@ impl Render for Inbox {
                             .on_click(
                                 cx.listener(move |s, _, _, cx| s.choose(Filter::Rule(id), cx)),
                             ),
+                    )
+                    .child(
+                        Button::new(("edit-rule", id as u64))
+                            .xsmall()
+                            .label("编辑")
+                            .on_click(cx.listener(move |s, _, window, cx| {
+                                if let Some(rule) = s.rules.iter().find(|r| r.id == id).cloned() {
+                                    s.open_rule_form(Some(rule), window, cx);
+                                }
+                            })),
                     ),
             );
         }

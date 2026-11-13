@@ -81,7 +81,8 @@ async fn capture(
             return (
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "Request body exceeds 16 MiB or could not be read",
-            );
+            )
+                .into_response();
         }
     };
     let request = CapturedRequest {
@@ -97,11 +98,25 @@ async fn capture(
             .collect(),
         body,
     };
-    match tokio::task::spawn_blocking(move || store.insert(&request)).await {
-        Ok(Ok(_)) => (StatusCode::OK, "Captured by Roc Request Bin\n"),
+    match tokio::task::spawn_blocking(move || store.capture(&request)).await {
+        Ok(Ok((_, response))) => {
+            let mut result = (
+                StatusCode::from_u16(response.status_code)
+                    .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                response.response_body,
+            )
+                .into_response();
+            if let Ok(value) = response.content_type.parse() {
+                result
+                    .headers_mut()
+                    .insert(axum::http::header::CONTENT_TYPE, value);
+            }
+            result
+        }
         _ => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "Failed to persist request",
-        ),
+        )
+            .into_response(),
     }
 }

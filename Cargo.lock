@@ -5594,7 +5594,7 @@ dependencies = [
 
 [[package]]
 name = "roc-request-bin"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -5602,6 +5602,7 @@ dependencies = [
  "chrono",
  "dirs 6.0.0",
  "gpui-kit",
+ "mime",
  "raw-window-handle",
  "reqwest",
  "rusqlite",

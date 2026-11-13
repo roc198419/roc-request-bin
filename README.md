@@ -14,7 +14,9 @@ curl -X POST http://127.0.0.1:8787/webhooks/payment \
   -d '{"event":"payment.completed","id":42}'
 ```
 
-左栏新增规则可填写名称、请求路径前缀和多个 HTTP Methods。规则列表将名称、Methods、路径前缀及请求数量放在同一行。
+左栏新增规则可填写名称、请求路径前缀、多个 HTTP Methods，以及返回给调用方的 `status_code`、`content_type`、`response_body`。默认状态码 200、Content-Type 为 `text/plain; charset=utf-8`，Body 为 `Captured by Roc Request Bin` 加换行。响应 Body 支持多行文本或 JSON；Content-Type 会校验为有效 MIME 类型。支持 200–599 的最终响应状态码，204、205、304 需将 Body 留空，HEAD 响应遵守 HTTP 规范不发送 Body。
+
+规则列表将名称、Methods、路径前缀及请求数量放在同一行，右侧「编辑」可修改规则全部字段。保存后立即生效并重新计算历史匹配，保留规则 ID 和原始请求。
 
 匹配时忽略 URL 的 scheme、host 和端口，仅比较路径与查询字符串。例如 `/api/orders` 可匹配任意主机的 `/api/orders?state=paid`。输入完整 HTTP URL 时会自动提取路径及查询字符串；去除首尾空白后的这部分前缀必须唯一，Methods 不参与去重。匹配按字面、区分大小写，不将 `%` 或 `_` 视为通配符。
 
@@ -24,7 +26,7 @@ curl -X POST http://127.0.0.1:8787/webhooks/payment \
 
 分隔栏可拖动，默认左栏占 30%，比例与监听配置均持久化至用户目录 `~/.roc-request-bin/data.db`。布局有最小面板宽度，窗口过窄时会约束比例。规则和请求也存储在同一 SQLite 数据库。
 
-这是接收直接发送到监听地址的 HTTP 请求的工具，返回 200；不自动抓取系统网络流量，不转发上游，也不解密 HTTPS。默认只监听本机，可改为 `0.0.0.0` 或其他本机 IP 供其他设备访问。
+这是接收直接发送到监听地址的 HTTP 请求的工具，持久化成功后按命中规则的响应配置返回；命中多条时选择路径前缀最长的规则，相同长度按规则 ID 升序。未命中时返回默认 200 文本响应。不自动抓取系统网络流量，不转发上游，也不解密 HTTPS。默认只监听本机，可改为 `0.0.0.0` 或其他本机 IP 供其他设备访问。
 
 ## 系统托盘
 

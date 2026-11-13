@@ -47,6 +47,39 @@ pub struct Rule {
     pub prefix: String,
     pub methods: Vec<String>,
     pub count: usize,
+    pub response: ResponseConfig,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResponseConfig {
+    pub status_code: u16,
+    pub content_type: String,
+    pub response_body: String,
+}
+impl Default for ResponseConfig {
+    fn default() -> Self {
+        Self {
+            status_code: 200,
+            content_type: "text/plain; charset=utf-8".into(),
+            response_body: "Captured by Roc Request Bin\n".into(),
+        }
+    }
+}
+impl ResponseConfig {
+    fn validate(&self) -> Result<()> {
+        if !(200..=599).contains(&self.status_code) {
+            bail!("Status code 必须为 200–599");
+        }
+        if self.content_type.parse::<mime::Mime>().is_err()
+            || axum::http::HeaderValue::from_str(&self.content_type).is_err()
+        {
+            bail!("请输入有效的 Content-Type，例如 application/json");
+        }
+        if matches!(self.status_code, 204 | 205 | 304) && !self.response_body.is_empty() {
+            bail!("204、205、304 响应不允许包含 Body，请清空 Response body");
+        }
+        Ok(())
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Header {
@@ -221,6 +254,16 @@ impl Store {
             CREATE INDEX IF NOT EXISTS requests_time_desc ON requests(time DESC,id DESC);
             CREATE UNIQUE INDEX IF NOT EXISTS rules_prefix_unique ON rules(prefix);")?;
         migrate(&mut conn)?;
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if version < 2 {
+            let tx = conn.transaction()?;
+            tx.execute_batch("ALTER TABLE rules ADD COLUMN status_code INTEGER NOT NULL DEFAULT 200;
+                ALTER TABLE rules ADD COLUMN content_type TEXT NOT NULL DEFAULT 'text/plain; charset=utf-8';
+                ALTER TABLE rules ADD COLUMN response_body TEXT NOT NULL DEFAULT 'Captured by Roc Request Bin
+';
+                PRAGMA user_version=2;")?;
+            tx.commit()?;
+        }
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             revision: Arc::new(AtomicU64::new(0)),
@@ -265,7 +308,7 @@ impl Store {
     }
     pub fn rules(&self) -> Result<Vec<Rule>> {
         let c = self.conn.lock().unwrap();
-        let mut q = c.prepare("SELECT r.id,r.name,r.prefix,r.methods,(SELECT count(*) FROM matches m WHERE m.rule_id=r.id) FROM rules r ORDER BY r.id")?;
+        let mut q = c.prepare("SELECT r.id,r.name,r.prefix,r.methods,(SELECT count(*) FROM matches m WHERE m.rule_id=r.id),r.status_code,r.content_type,r.response_body FROM rules r ORDER BY r.id")?;
         Ok(q.query_map([], |r| {
             let m: String = r.get(3)?;
             Ok(Rule {
@@ -274,11 +317,26 @@ impl Store {
                 prefix: r.get(2)?,
                 methods: serde_json::from_str(&m).unwrap_or_default(),
                 count: r.get::<_, i64>(4)? as usize,
+                response: ResponseConfig {
+                    status_code: r.get(5)?,
+                    content_type: r.get(6)?,
+                    response_body: r.get(7)?,
+                },
             })
         })?
         .collect::<rusqlite::Result<_>>()?)
     }
     pub fn add_rule(&self, name: &str, prefix: &str, methods: &[String]) -> Result<i64> {
+        self.save_rule(None, name, prefix, methods, &ResponseConfig::default())
+    }
+    pub fn save_rule(
+        &self,
+        id: Option<i64>,
+        name: &str,
+        prefix: &str,
+        methods: &[String],
+        response: &ResponseConfig,
+    ) -> Result<i64> {
         if name.trim().is_empty()
             || prefix.trim().is_empty()
             || methods.is_empty()
@@ -287,21 +345,30 @@ impl Store {
             bail!("Name, URL prefix and at least one valid method are required");
         }
         let prefix = match_target(prefix)?;
+        response.validate()?;
         let mut c = self.conn.lock().unwrap();
         let tx = c.transaction()?;
         let exists: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM rules WHERE prefix=?1)",
-            [prefix.trim()],
+            "SELECT EXISTS(SELECT 1 FROM rules WHERE prefix=?1 AND id!=?2)",
+            params![prefix.trim(), id.unwrap_or(-1)],
             |r| r.get(0),
         )?;
         if exists {
             bail!("URL 前缀已存在，请使用其他前缀");
         }
-        tx.execute(
-            "INSERT INTO rules(name,prefix,methods) VALUES(?1,?2,?3)",
-            params![name.trim(), prefix.trim(), serde_json::to_string(methods)?],
-        )?;
-        let id = tx.last_insert_rowid();
+        let id = if let Some(id) = id {
+            let changed=tx.execute("UPDATE rules SET name=?1,prefix=?2,methods=?3,status_code=?4,content_type=?5,response_body=?6 WHERE id=?7",
+                params![name.trim(),prefix,serde_json::to_string(methods)?,response.status_code,response.content_type,response.response_body,id])?;
+            if changed == 0 {
+                bail!("规则已被删除，请刷新后重试");
+            }
+            tx.execute("DELETE FROM matches WHERE rule_id=?1", [id])?;
+            id
+        } else {
+            tx.execute("INSERT INTO rules(name,prefix,methods,status_code,content_type,response_body) VALUES(?1,?2,?3,?4,?5,?6)",
+                params![name.trim(),prefix,serde_json::to_string(methods)?,response.status_code,response.content_type,response.response_body])?;
+            tx.last_insert_rowid()
+        };
         // substr implements a literal prefix: SQL LIKE would treat % and _ as wildcards.
         for method in methods {
             tx.execute("INSERT OR IGNORE INTO matches SELECT id,?1 FROM requests WHERE method=?2 AND substr(target,1,length(?3))=?3", params![id,method,prefix.trim()])?;
@@ -311,6 +378,9 @@ impl Store {
         Ok(id)
     }
     pub fn insert(&self, r: &CapturedRequest) -> Result<i64> {
+        self.capture(r).map(|(id, _)| id)
+    }
+    pub fn capture(&self, r: &CapturedRequest) -> Result<(i64, ResponseConfig)> {
         let mut c = self.conn.lock().unwrap();
         let tx = c.transaction()?;
         tx.execute(
@@ -327,9 +397,15 @@ impl Store {
         )?;
         let id = tx.last_insert_rowid();
         tx.execute("INSERT INTO matches SELECT ?1,id FROM rules WHERE substr(?2,1,length(prefix))=prefix AND EXISTS(SELECT 1 FROM json_each(rules.methods) WHERE value=?3)",params![id,match_target(&r.url)?,r.method])?;
+        let response=tx.query_row("SELECT status_code,content_type,response_body FROM rules WHERE id IN (SELECT rule_id FROM matches WHERE request_id=?1) ORDER BY length(prefix) DESC,id ASC LIMIT 1",[id],|r|Ok(ResponseConfig {status_code:r.get(0)?,content_type:r.get(1)?,response_body:r.get(2)?}));
+        let response = match response {
+            Ok(response) => response,
+            Err(rusqlite::Error::QueryReturnedNoRows) => ResponseConfig::default(),
+            Err(e) => return Err(e.into()),
+        };
         tx.commit()?;
         self.changed();
-        Ok(id)
+        Ok((id, response))
     }
     pub fn delete_rules(&self, ids: &[i64]) -> Result<()> {
         self.delete("rules", ids)

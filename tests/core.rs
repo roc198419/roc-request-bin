@@ -91,6 +91,7 @@ fn migration_drops_description_normalizes_rules_and_preserves_requests() {
     let db = Store::open(&path).unwrap();
     assert_eq!(db.rules().unwrap().len(), 1);
     assert_eq!(db.rules().unwrap()[0].prefix, "/api");
+    assert_eq!(db.rules().unwrap()[0].response, ResponseConfig::default());
     assert_eq!(db.rules().unwrap()[0].methods.len(), 2);
     db.insert(&request("GET", "https://third.example/api/orders"))
         .unwrap();
@@ -184,6 +185,147 @@ fn displayed_and_copied_times_use_utc_plus_eight() {
     let r = request("GET", "http://local/");
     assert!(r.export().contains("2026-11-13 08:00:00.000 (UTC+8)"));
     assert_eq!(r.time, "2026-11-13T00:00:00Z");
+}
+
+#[test]
+fn rule_edits_preserve_id_rebuild_matches_and_validate_response() {
+    let (dir, db) = db();
+    db.insert(&request("GET", "http://first/a")).unwrap();
+    db.insert(&request("POST", "https://second/b")).unwrap();
+    let id = db.add_rule("first", "/a", &["GET".into()]).unwrap();
+    let other = db.add_rule("other", "/other", &["GET".into()]).unwrap();
+    let response = ResponseConfig {
+        status_code: 201,
+        content_type: "application/json".into(),
+        response_body: "{\"ok\":true}".into(),
+    };
+    assert!(
+        db.save_rule(Some(id), "conflict", "/other", &["POST".into()], &response)
+            .is_err()
+    );
+    assert_eq!(db.rules().unwrap()[0].prefix, "/a");
+    assert_eq!(
+        db.save_rule(Some(id), "edited", "/b", &["POST".into()], &response)
+            .unwrap(),
+        id
+    );
+    assert_eq!(db.page(Filter::Rule(id), 0).unwrap().0, 1);
+    assert_eq!(db.page(Filter::Unmatched, 0).unwrap().0, 1);
+    assert_eq!(db.rules().unwrap()[0].name, "edited");
+    assert!(
+        db.save_rule(
+            Some(other),
+            "bad",
+            "/other",
+            &["GET".into()],
+            &ResponseConfig {
+                status_code: 100,
+                ..response.clone()
+            }
+        )
+        .is_err()
+    );
+    assert!(
+        db.save_rule(
+            Some(other),
+            "bad",
+            "/other",
+            &["GET".into()],
+            &ResponseConfig {
+                content_type: "text/plain\r\nx-extra: x".into(),
+                ..response.clone()
+            }
+        )
+        .is_err()
+    );
+    assert!(
+        db.save_rule(
+            Some(other),
+            "bad",
+            "/other",
+            &["GET".into()],
+            &ResponseConfig {
+                status_code: 204,
+                ..response.clone()
+            }
+        )
+        .is_err()
+    );
+    drop(db);
+    let db = Store::open(&dir.path().join("data.db")).unwrap();
+    assert_eq!(db.rules().unwrap()[0].response, response);
+}
+
+#[tokio::test]
+async fn custom_responses_use_longest_prefix_and_edits_apply_without_restart() {
+    let (_dir, db) = db();
+    let broad = ResponseConfig {
+        status_code: 202,
+        content_type: "text/plain; charset=utf-8".into(),
+        response_body: "broad".into(),
+    };
+    db.save_rule(None, "broad", "/api", &["POST".into()], &broad)
+        .unwrap();
+    let specific = ResponseConfig {
+        status_code: 201,
+        content_type: "application/json".into(),
+        response_body: "{\"created\":true}".into(),
+    };
+    let id = db
+        .save_rule(None, "specific", "/api/orders", &["POST".into()], &specific)
+        .unwrap();
+    let listener = Listener::start(db.clone(), "127.0.0.1:0".parse().unwrap()).unwrap();
+    let url = format!("http://{}/api/orders/42", listener.address);
+    let client = reqwest::Client::new();
+    let response = client.post(&url).send().await.unwrap();
+    assert_eq!(response.status(), 201);
+    assert_eq!(response.headers()["content-type"], "application/json");
+    assert_eq!(response.text().await.unwrap(), specific.response_body);
+    let edited = ResponseConfig {
+        status_code: 418,
+        content_type: "text/plain".into(),
+        response_body: "edited".into(),
+    };
+    db.save_rule(Some(id), "edited", "/api/orders", &["POST".into()], &edited)
+        .unwrap();
+    let response = client.post(&url).send().await.unwrap();
+    assert_eq!(response.status(), 418);
+    assert_eq!(response.text().await.unwrap(), "edited");
+    db.save_rule(Some(id), "moved", "/different", &["POST".into()], &edited)
+        .unwrap();
+    let response = client.post(&url).send().await.unwrap();
+    assert_eq!(response.status(), 202);
+    assert_eq!(response.text().await.unwrap(), "broad");
+    let response = client.get(&url).send().await.unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        response.text().await.unwrap(),
+        ResponseConfig::default().response_body
+    );
+    assert_eq!(db.page(Filter::All, 0).unwrap().0, 4);
+    let no_content = ResponseConfig {
+        status_code: 204,
+        content_type: "application/json".into(),
+        response_body: String::new(),
+    };
+    db.save_rule(None, "empty", "/empty", &["GET".into()], &no_content)
+        .unwrap();
+    let response = client
+        .get(format!("http://{}/empty", listener.address))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 204);
+    assert!(response.bytes().await.unwrap().is_empty());
+    db.save_rule(None, "head", "/head", &["HEAD".into()], &specific)
+        .unwrap();
+    let response = client
+        .head(format!("http://{}/head", listener.address))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 201);
+    assert!(response.bytes().await.unwrap().is_empty());
 }
 #[tokio::test]
 async fn real_http_captures_duplicate_headers_binary_body_and_bind_errors() {
