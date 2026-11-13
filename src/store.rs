@@ -15,6 +15,16 @@ pub const METHODS: &[&str] = &[
 ];
 pub const PAGE_SIZE: usize = 50;
 
+pub fn display_time(value: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .map(|time| {
+            time.with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).unwrap())
+                .format("%Y-%m-%d %H:%M:%S%.3f")
+                .to_string()
+        })
+        .unwrap_or_else(|_| value.to_owned())
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Settings {
     pub sidebar_ratio: f32,
@@ -88,7 +98,7 @@ impl CapturedRequest {
             "{} {}\nTime: {}\nPeer: {}\n{}\n\n{}",
             self.method,
             self.url,
-            self.time,
+            format_args!("{} (UTC+8)", display_time(&self.time)),
             self.peer,
             self.headers
                 .iter()

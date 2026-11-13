@@ -170,6 +170,21 @@ fn request_time_sorts_before_id_with_stable_ties() {
         vec![newest, tie, middle, oldest]
     );
 }
+
+#[test]
+fn displayed_and_copied_times_use_utc_plus_eight() {
+    assert_eq!(
+        display_time("2026-11-13T20:05:06.123Z"),
+        "2026-11-14 04:05:06.123"
+    );
+    assert_eq!(
+        display_time("2026-11-13T12:05:06.123-08:00"),
+        "2026-11-14 04:05:06.123"
+    );
+    let r = request("GET", "http://local/");
+    assert!(r.export().contains("2026-11-13 08:00:00.000 (UTC+8)"));
+    assert_eq!(r.time, "2026-11-13T00:00:00Z");
+}
 #[tokio::test]
 async fn real_http_captures_duplicate_headers_binary_body_and_bind_errors() {
     let (_dir, db) = db();
