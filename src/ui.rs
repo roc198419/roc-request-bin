@@ -8,12 +8,9 @@ use gpui_kit::component::{
     *,
 };
 use gpui_kit::*;
+use roc_request_bin::update::{UpdateManager, UpdateStatus};
 use roc_request_bin::{server::Listener, store::*};
-use std::{
-    collections::HashSet,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{collections::HashSet, time::Duration};
 
 // Keep captured content literal; it must never be interpreted as links or images.
 fn literal(text: &str) -> String {
@@ -47,7 +44,7 @@ pub struct Inbox {
     port: Entity<InputState>,
     methods: HashSet<String>,
     form_error: String,
-    update_status: Arc<Mutex<String>>,
+    updates: UpdateManager,
     tray: Option<crate::tray::AppTray>,
 }
 impl Inbox {
@@ -84,11 +81,11 @@ impl Inbox {
             port,
             methods: HashSet::from(["GET".into(), "POST".into()]),
             form_error: String::new(),
-            update_status: Arc::new(Mutex::new("正在检查更新…".into())),
+            updates: UpdateManager::new(),
             tray: None,
         };
         this.refresh();
-        crate::update::start(this.update_status.clone());
+        this.updates.check_if_due();
         let view = cx.entity().downgrade();
         window.defer(cx, move |window, cx| {
             if let Some(view) = view.upgrade() {
@@ -114,6 +111,7 @@ impl Inbox {
                     .await;
                 if view
                     .update_in(cx, |this, window, cx| {
+                        this.updates.check_if_due();
                         let commands = this
                             .tray
                             .as_ref()
@@ -536,6 +534,7 @@ impl Inbox {
 }
 impl Render for Inbox {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let update_status = self.updates.status();
         let width = f32::from(window.viewport_size().width);
         let mut sidebar = v_flex()
             .size_full()
@@ -991,8 +990,32 @@ impl Render for Inbox {
                     .border_color(rgb(0xe2e8f0))
                     .text_xs()
                     .text_color(rgb(0x53647c))
-                    .child(self.update_status.lock().unwrap().clone())
-                    .child(format!("v{}", env!("CARGO_PKG_VERSION"))),
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child(update_status.message()),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_3()
+                            .child(
+                                Button::new("check-updates")
+                                    .xsmall()
+                                    .label(match &update_status {
+                                        UpdateStatus::Checking => "检查中…",
+                                        UpdateStatus::Installed(_) => "重启后生效",
+                                        _ => "检查更新",
+                                    })
+                                    .disabled(!update_status.can_check())
+                                    .on_click(cx.listener(|s, _, _, cx| {
+                                        s.updates.check_now();
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(format!("v{}", env!("CARGO_PKG_VERSION"))),
+                    ),
             )
     }
 }

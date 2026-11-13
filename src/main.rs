@@ -1,7 +1,6 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 mod tray;
 mod ui;
-mod update;
 
 use gpui_kit::assets::Assets;
 use gpui_kit::*;
