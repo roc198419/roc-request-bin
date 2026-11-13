@@ -126,6 +126,7 @@ fn check_release() -> anyhow::Result<CheckResult> {
         })
         .current_version(env!("CARGO_PKG_VERSION"))
         .no_confirm(true)
+        .show_output(false)
         .show_download_progress(false)
         .build()?
         .update()?;
