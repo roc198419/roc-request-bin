@@ -68,6 +68,15 @@ pub struct CapturedRequest {
     pub headers: Vec<Header>,
     pub body: Vec<u8>,
 }
+#[derive(Clone, Debug)]
+pub struct RequestSummary {
+    pub id: i64,
+    pub time: String,
+    pub method: String,
+    pub url: String,
+    pub header_count: usize,
+    pub body_size: usize,
+}
 impl CapturedRequest {
     pub fn body_text(&self) -> String {
         match std::str::from_utf8(&self.body) {
@@ -264,7 +273,36 @@ impl Store {
         self.changed();
         Ok(())
     }
-    pub fn page(&self, filter: Filter, page: usize) -> Result<(usize, Vec<CapturedRequest>)> {
+    pub fn counts(&self) -> Result<(usize, usize)> {
+        let c = self.conn.lock().unwrap();
+        Ok(c.query_row("SELECT count(*),coalesce(sum(NOT EXISTS(SELECT 1 FROM matches m WHERE m.request_id=r.id)),0) FROM requests r", [], |r| Ok((r.get::<_,i64>(0)? as usize,r.get::<_,i64>(1)? as usize)))?)
+    }
+    pub fn request(&self, id: i64) -> Result<CapturedRequest> {
+        let c = self.conn.lock().unwrap();
+        let raw = c.query_row(
+            "SELECT id,time,method,url,peer,headers,body FROM requests WHERE id=?1",
+            [id],
+            |r| {
+                let headers: String = r.get(5)?;
+                Ok((
+                    CapturedRequest {
+                        id: r.get(0)?,
+                        time: r.get(1)?,
+                        method: r.get(2)?,
+                        url: r.get(3)?,
+                        peer: r.get(4)?,
+                        headers: vec![],
+                        body: r.get(6)?,
+                    },
+                    headers,
+                ))
+            },
+        )?;
+        let (mut request, headers) = raw;
+        request.headers = serde_json::from_str(&headers)?;
+        Ok(request)
+    }
+    pub fn page(&self, filter: Filter, page: usize) -> Result<(usize, Vec<RequestSummary>)> {
         let (clause, id) = match filter {
             Filter::All => ("1=1", 0),
             Filter::Unmatched => (
@@ -282,20 +320,18 @@ impl Store {
             [id],
             |r| r.get::<_, i64>(0),
         )? as usize;
-        let mut q = c.prepare(&format!("SELECT id,time,method,url,peer,headers,body FROM requests r WHERE {clause} AND ?1=?1 ORDER BY id DESC LIMIT ?2 OFFSET ?3"))?;
+        let mut q = c.prepare(&format!("SELECT id,time,method,url,json_array_length(headers),length(body) FROM requests r WHERE {clause} AND ?1=?1 ORDER BY id DESC LIMIT ?2 OFFSET ?3"))?;
         let rows = q
             .query_map(
                 params![id, PAGE_SIZE as i64, page.saturating_mul(PAGE_SIZE) as i64],
                 |r| {
-                    let headers: String = r.get(5)?;
-                    Ok(CapturedRequest {
+                    Ok(RequestSummary {
                         id: r.get(0)?,
                         time: r.get(1)?,
                         method: r.get(2)?,
                         url: r.get(3)?,
-                        peer: r.get(4)?,
-                        headers: serde_json::from_str(&headers).unwrap_or_default(),
-                        body: r.get(6)?,
+                        header_count: r.get::<_, i64>(4)? as usize,
+                        body_size: r.get::<_, i64>(5)? as usize,
                     })
                 },
             )?

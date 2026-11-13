@@ -27,7 +27,7 @@ pub struct Inbox {
     settings: Settings,
     listener: Option<Listener>,
     rules: Vec<Rule>,
-    requests: Vec<CapturedRequest>,
+    requests: Vec<RequestSummary>,
     filter: Filter,
     total: usize,
     all_count: usize,
@@ -106,6 +106,7 @@ impl Inbox {
         this
     }
     fn refresh(&mut self) {
+        let revision = self.store.revision();
         let result = (|| -> anyhow::Result<()> {
             self.rules = self.store.rules()?;
             (self.total, self.requests) = self.store.page(self.filter, self.page)?;
@@ -113,9 +114,8 @@ impl Inbox {
                 self.page = self.total.saturating_sub(1) / PAGE_SIZE;
                 (self.total, self.requests) = self.store.page(self.filter, self.page)?;
             }
-            self.all_count = self.store.page(Filter::All, 0)?.0;
-            self.unmatched_count = self.store.page(Filter::Unmatched, 0)?.0;
-            self.revision = self.store.revision();
+            (self.all_count, self.unmatched_count) = self.store.counts()?;
+            self.revision = revision;
             Ok(())
         })();
         if let Err(e) = result {
@@ -159,7 +159,7 @@ impl Inbox {
             .update(cx, |s, cx| s.set_value("", window, cx));
         self.prefix.update(cx, |s, cx| s.set_value("", window, cx));
         let view = cx.entity();
-        window.open_dialog(cx, move |dialog, _, cx| {
+        window.open_alert_dialog(cx, move |dialog, _, cx| {
             let this = view.read(cx);
             let mut checks = h_flex().flex_wrap().gap_3();
             for method in METHODS {
@@ -241,7 +241,7 @@ impl Inbox {
             s.set_value(self.settings.port.to_string(), window, cx)
         });
         let view = cx.entity();
-        window.open_dialog(cx, move |dialog, _, cx| {
+        window.open_alert_dialog(cx, move |dialog, _, cx| {
             let this = view.read(cx);
             let v = view.clone();
             dialog
@@ -546,7 +546,6 @@ impl Render for Inbox {
         let mut rows = v_flex();
         for (index, r) in self.requests.iter().enumerate() {
             let id = r.id;
-            let request = r.clone();
             rows = rows.child(
                 h_flex()
                     .w_full()
@@ -600,15 +599,21 @@ impl Render for Inbox {
                                     .child(r.method.clone()),
                             )
                             .child(div().flex_1().min_w_0().truncate().child(r.url.clone()))
-                            .child(div().w(px(48.)).child(r.headers.len().to_string()))
-                            .child(div().w(px(56.)).child(if r.body.is_empty() {
+                            .child(div().w(px(48.)).child(r.header_count.to_string()))
+                            .child(div().w(px(56.)).child(if r.body_size == 0 {
                                 "—"
                             } else {
                                 "有"
                             }))
-                            .on_click(move |_, window, cx| {
-                                Self::details(request.clone(), window, cx)
-                            }),
+                            .on_click(cx.listener(
+                                move |s, _, window, cx| match s.store.request(id) {
+                                    Ok(request) => Self::details(request, window, cx),
+                                    Err(e) => {
+                                        s.error = e.to_string();
+                                        cx.notify();
+                                    }
+                                },
+                            )),
                     ),
             );
         }

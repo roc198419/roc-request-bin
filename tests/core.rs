@@ -27,6 +27,7 @@ fn prefix_is_unique_independently_of_methods_and_name() {
         .unwrap_err();
     assert!(error.to_string().contains("URL 前缀已存在"));
     assert_eq!(db.rules().unwrap().len(), 1);
+    assert_eq!(db.rules().unwrap()[0].description, "支付回调说明");
     db.add_rule("Child", "", "http://local/a/b", &["GET".into()])
         .unwrap();
 }
@@ -79,8 +80,37 @@ fn restart_restores_settings_and_raw_bytes_and_pagination() {
     let (count, page) = db.page(Filter::All, 1).unwrap();
     assert_eq!(count, 53);
     assert_eq!(page.len(), 3);
-    assert_eq!(page[0].body, vec![0, 255, 42]);
+    assert_eq!(db.request(page[0].id).unwrap().body, vec![0, 255, 42]);
     assert!(page[0].id > page[1].id);
+}
+
+#[test]
+fn description_migrates_existing_databases_without_losing_rules() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("data.db");
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch("CREATE TABLE rules(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL,prefix TEXT NOT NULL,methods TEXT NOT NULL);
+        INSERT INTO rules(name,prefix,methods) VALUES('old','http://local/','[\"GET\"]');").unwrap();
+    drop(conn);
+    let db = Store::open(&path).unwrap();
+    assert_eq!(db.rules().unwrap()[0].description, "");
+    db.add_rule(
+        "new",
+        "A persisted description",
+        "http://local/new",
+        &["POST".into()],
+    )
+    .unwrap();
+    drop(db);
+    let db = Store::open(&path).unwrap();
+    assert_eq!(
+        db.rules().unwrap()[1].description,
+        "A persisted description"
+    );
+    assert!(
+        db.add_rule("duplicate", "", "http://local/new", &["GET".into()])
+            .is_err()
+    );
 }
 #[tokio::test]
 async fn real_http_captures_duplicate_headers_binary_body_and_bind_errors() {
@@ -101,9 +131,10 @@ async fn real_http_captures_duplicate_headers_binary_body_and_bind_errors() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].url, url);
     assert_eq!(rows[0].method, "POST");
-    assert_eq!(rows[0].body, vec![0, 255, 42]);
+    let captured = db.request(rows[0].id).unwrap();
+    assert_eq!(captured.body, vec![0, 255, 42]);
     assert_eq!(
-        rows[0]
+        captured
             .headers
             .iter()
             .filter(|h| h.name == "x-repeat")
