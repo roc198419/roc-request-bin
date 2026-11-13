@@ -627,74 +627,65 @@ impl Render for Inbox {
                     ),
             );
         }
-        let mut content =
-            v_flex()
-                .flex_1()
-                .min_h_0()
-                .p_5()
-                .gap_4()
-                .child(
-                    h_flex()
-                        .justify_between()
-                        .child(
-                            v_flex()
-                                .gap_1()
-                                .child(
-                                    div()
-                                        .text_xl()
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .child(title),
-                                )
-                                .child(div().text_sm().text_color(rgb(0x53647c)).child(format!(
-                                    "{} 条请求 · 按请求时间倒序 · UTC+8",
-                                    self.total
-                                ))),
-                        )
-                        .child(
-                            Button::new("delete-requests")
-                                .label(format!("删除已选 ({})", self.selected_requests.len()))
-                                .disabled(self.selected_requests.is_empty())
-                                .on_click(cx.listener(|s, _, _, cx| {
-                                    match s.store.delete_requests(
-                                        &s.selected_requests.iter().copied().collect::<Vec<_>>(),
-                                    ) {
-                                        Ok(()) => {
-                                            s.selected_requests.clear();
-                                            s.refresh();
-                                        }
-                                        Err(e) => s.error = e.to_string(),
+        let mut content = v_flex()
+            .flex_1()
+            .min_h_0()
+            .p_5()
+            .gap_4()
+            .child(
+                h_flex()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_xl()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(title),
+                    )
+                    .child(
+                        Button::new("delete-requests")
+                            .label(format!("删除已选 ({})", self.selected_requests.len()))
+                            .disabled(self.selected_requests.is_empty())
+                            .on_click(cx.listener(|s, _, _, cx| {
+                                match s.store.delete_requests(
+                                    &s.selected_requests.iter().copied().collect::<Vec<_>>(),
+                                ) {
+                                    Ok(()) => {
+                                        s.selected_requests.clear();
+                                        s.refresh();
                                     }
-                                    cx.notify();
-                                })),
-                        ),
-                )
-                .child(
-                    h_flex()
-                        .px_3()
-                        .gap_3()
-                        .text_xs()
-                        .text_color(rgb(0x53647c))
-                        .child(
-                            Checkbox::new("select-page")
-                                .checked(all_selected)
-                                .on_change(cx.listener(|s, checked, _, cx| {
-                                    for r in &s.requests {
-                                        if *checked {
-                                            s.selected_requests.insert(r.id);
-                                        } else {
-                                            s.selected_requests.remove(&r.id);
-                                        }
+                                    Err(e) => s.error = e.to_string(),
+                                }
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .px_3()
+                    .gap_3()
+                    .text_xs()
+                    .text_color(rgb(0x53647c))
+                    .child(
+                        Checkbox::new("select-page")
+                            .checked(all_selected)
+                            .on_change(cx.listener(|s, checked, _, cx| {
+                                for r in &s.requests {
+                                    if *checked {
+                                        s.selected_requests.insert(r.id);
+                                    } else {
+                                        s.selected_requests.remove(&r.id);
                                     }
-                                    cx.notify();
-                                })),
-                        )
-                        .child(div().w(px(44.)).child("序号"))
-                        .child(div().w(px(180.)).flex_shrink_0().child("请求时间"))
-                        .child(div().w(px(70.)).child("METHOD"))
-                        .child(div().flex_1().child("URL"))
-                        .child(div().w(px(48.)).child("头数量"))
-                        .child(div().w(px(56.)).child("BODY")),
-                );
+                                }
+                                cx.notify();
+                            })),
+                    )
+                    .child(div().w(px(44.)).child("序号"))
+                    .child(div().w(px(180.)).flex_shrink_0().child("请求时间"))
+                    .child(div().w(px(70.)).child("METHOD"))
+                    .child(div().flex_1().child("URL"))
+                    .child(div().w(px(48.)).child("头数量"))
+                    .child(div().w(px(56.)).child("BODY")),
+            );
         if self.requests.is_empty() {
             content = content.child(
                 v_flex()
