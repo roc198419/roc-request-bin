@@ -1,0 +1,64 @@
+name: Build and release
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: macos-15
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - run: cargo fmt --check
+      - run: cargo test --locked --no-default-features
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist
+          Copy-Item target/${{ matrix.target }}/release/roc-request-bin.exe dist/
+          Compress-Archive -Path dist/roc-request-bin.exe -DestinationPath dist/roc-request-bin-${{ matrix.target }}.zip
+      - name: Package macOS
+        if: runner.os == 'macOS'
+        run: python3 scripts/package_macos.py ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: roc-request-bin-${{ matrix.target }}
+          path: dist/*.zip
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/*.zip --repo "$GITHUB_REPOSITORY" --generate-notes

@@ -1,0 +1,45 @@
+[package]
+name = "roc-request-bin"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+description = "A native HTTP request inbox for Windows and macOS"
+license = "MIT"
+repository = "https://github.com/roc198419/roc-request-bin"
+
+[features]
+default = ["desktop"]
+desktop = ["dep:gpui-kit", "dep:self_update"]
+
+[dependencies]
+anyhow = "1"
+axum = "0.8"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "6"
+gpui-kit = { version = "=0.9.1", optional = true }
+rusqlite = { version = "0.38", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+self_update = { version = "0.42", default-features = false, features = ["archive-zip", "compression-zip-deflate", "rustls"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros"] }
+
+[dev-dependencies]
+tempfile = "3"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
+[[bin]]
+name = "roc-request-bin"
+path = "src/main.rs"
+required-features = ["desktop"]
+
+[profile.dev]
+debug = 0
+
+[profile.release]
+strip = true
+lto = "thin"
+
