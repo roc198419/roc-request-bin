@@ -38,7 +38,6 @@ pub struct Inbox {
     selected_requests: HashSet<i64>,
     error: String,
     name: Entity<InputState>,
-    description: Entity<InputState>,
     prefix: Entity<InputState>,
     ip: Entity<InputState>,
     port: Entity<InputState>,
@@ -71,11 +70,7 @@ impl Inbox {
             selected_requests: HashSet::new(),
             error: String::new(),
             name: cx.new(|cx| InputState::new(window, cx).placeholder("例如：支付回调")),
-            description: cx
-                .new(|cx| InputState::new(window, cx).placeholder("可选，描述这条规则的用途")),
-            prefix: cx.new(|cx| {
-                InputState::new(window, cx).placeholder("http://127.0.0.1:8787/webhooks/")
-            }),
+            prefix: cx.new(|cx| InputState::new(window, cx).placeholder("/webhooks/")),
             ip,
             port,
             methods: HashSet::from(["GET".into(), "POST".into()]),
@@ -155,8 +150,6 @@ impl Inbox {
     fn rule_dialog(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
         self.form_error.clear();
         self.name.update(cx, |s, cx| s.set_value("", window, cx));
-        self.description
-            .update(cx, |s, cx| s.set_value("", window, cx));
         self.prefix.update(cx, |s, cx| s.set_value("", window, cx));
         let view = cx.entity();
         window.open_alert_dialog(cx, move |dialog, _, cx| {
@@ -170,7 +163,7 @@ impl Inbox {
                     Checkbox::new(SharedString::from(method.clone()))
                         .label(method.clone())
                         .checked(this.methods.contains(&method))
-                        .on_change(move |checked, _, cx| {
+                        .on_change(move |checked, window, cx| {
                             v.update(cx, |s, cx| {
                                 if *checked {
                                     s.methods.insert(m.clone());
@@ -179,6 +172,7 @@ impl Inbox {
                                 }
                                 cx.notify();
                             });
+                            window.refresh();
                         }),
                 );
             }
@@ -196,9 +190,7 @@ impl Inbox {
                         .gap_3()
                         .child("规则名称")
                         .child(Input::new(&this.name))
-                        .child("Description · 规则说明（可选）")
-                        .child(Input::new(&this.description))
-                        .child("URL 前缀 · 区分大小写，按字面匹配")
+                        .child("路径前缀 · 忽略 scheme 和 host，区分大小写")
                         .child(Input::new(&this.prefix))
                         .child("HTTP Methods · 至少选择一项")
                         .child(checks)
@@ -208,12 +200,16 @@ impl Inbox {
                                 .child(this.form_error.clone()),
                         ),
                 )
-                .on_ok(move |_, _, cx| {
+                .on_ok(move |_, window, cx| {
+                    window.refresh();
                     v.update(cx, |s, cx| {
-                        let methods: Vec<_> = s.methods.iter().cloned().collect();
+                        let methods: Vec<_> = METHODS
+                            .iter()
+                            .filter(|m| s.methods.contains(**m))
+                            .map(|m| m.to_string())
+                            .collect();
                         match s.store.add_rule(
                             s.name.read(cx).value().as_ref(),
-                            s.description.read(cx).value().as_ref(),
                             s.prefix.read(cx).value().as_ref(),
                             &methods,
                         ) {
@@ -266,7 +262,8 @@ impl Inbox {
                                 .child(this.form_error.clone()),
                         ),
                 )
-                .on_ok(move |_, _, cx| {
+                .on_ok(move |_, window, cx| {
+                    window.refresh();
                     v.update(cx, |s, cx| {
                         let ip = s.ip.read(cx).value().trim().to_owned();
                         let port = s.port.read(cx).value().parse::<u16>();
@@ -459,6 +456,12 @@ impl Render for Inbox {
         let mut rule_list = v_flex().gap_2();
         for rule in &self.rules {
             let id = rule.id;
+            let hint = format!(
+                "{} · {} · {}",
+                rule.name,
+                rule.methods.join(", "),
+                rule.prefix
+            );
             rule_list = rule_list.child(
                 h_flex()
                     .gap_2()
@@ -482,52 +485,53 @@ impl Render for Inbox {
                             })),
                     )
                     .child(
-                        v_flex()
+                        h_flex()
                             .id(("rule", id as u64))
                             .flex_1()
                             .min_w_0()
                             .cursor_pointer()
-                            .gap_1()
-                            .child(
-                                h_flex()
-                                    .justify_between()
-                                    .child(rule.name.clone())
-                                    .child(rule.count.to_string()),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(rgb(0x53647c))
-                                    .child(rule.description.clone()),
-                            )
+                            .tooltip(move |window, cx| {
+                                gpui_kit::component::tooltip::Tooltip::new(hint.clone())
+                                    .build(window, cx)
+                            })
+                            .gap_2()
+                            .child(div().max_w(px(90.)).truncate().child(rule.name.clone()))
                             .child(
                                 div()
                                     .text_xs()
+                                    .max_w(px(105.))
+                                    .truncate()
                                     .text_color(rgb(0x53647c))
                                     .child(rule.methods.join(" · ")),
                             )
-                            .child(div().text_xs().truncate().child(rule.prefix.clone()))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_xs()
+                                    .truncate()
+                                    .child(rule.prefix.clone()),
+                            )
+                            .child(
+                                div()
+                                    .flex_shrink_0()
+                                    .text_xs()
+                                    .child(rule.count.to_string()),
+                            )
                             .on_click(
                                 cx.listener(move |s, _, _, cx| s.choose(Filter::Rule(id), cx)),
                             ),
                     ),
             );
         }
-        sidebar = sidebar
-            .child(
-                div()
-                    .id("rules-scroll")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .child(rule_list),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(0x53647c))
-                    .child("每条请求可以匹配多个规则"),
-            );
+        sidebar = sidebar.child(
+            div()
+                .id("rules-scroll")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .child(rule_list),
+        );
         let title = match self.filter {
             Filter::All => "全部请求".to_owned(),
             Filter::Unmatched => "未匹配".to_owned(),
@@ -581,11 +585,12 @@ impl Render for Inbox {
                                     .child((self.page * PAGE_SIZE + index + 1).to_string()),
                             )
                             .child(
-                                v_flex()
-                                    .w(px(156.))
+                                div()
+                                    .w(px(180.))
+                                    .flex_shrink_0()
+                                    .truncate()
                                     .text_xs()
-                                    .child(r.time.get(..10).unwrap_or(&r.time).to_string())
-                                    .child(r.time.get(11..23).unwrap_or("").to_owned()),
+                                    .child(r.time.trim_end_matches('Z').replace('T', " ")),
                             )
                             .child(
                                 div()
@@ -617,74 +622,73 @@ impl Render for Inbox {
                     ),
             );
         }
-        let mut content =
-            v_flex()
-                .flex_1()
-                .min_h_0()
-                .p_5()
-                .gap_4()
-                .child(
-                    h_flex()
-                        .justify_between()
-                        .child(
-                            v_flex()
-                                .gap_1()
-                                .child(
-                                    div()
-                                        .text_xl()
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .child(title),
-                                )
-                                .child(div().text_sm().text_color(rgb(0x53647c)).child(format!(
-                                    "{} 条请求 · 最新请求优先 · UTC 时间",
-                                    self.total
-                                ))),
-                        )
-                        .child(
-                            Button::new("delete-requests")
-                                .label(format!("删除已选 ({})", self.selected_requests.len()))
-                                .disabled(self.selected_requests.is_empty())
-                                .on_click(cx.listener(|s, _, _, cx| {
-                                    match s.store.delete_requests(
-                                        &s.selected_requests.iter().copied().collect::<Vec<_>>(),
-                                    ) {
-                                        Ok(()) => {
-                                            s.selected_requests.clear();
-                                            s.refresh();
-                                        }
-                                        Err(e) => s.error = e.to_string(),
+        let mut content = v_flex()
+            .flex_1()
+            .min_h_0()
+            .p_5()
+            .gap_4()
+            .child(
+                h_flex()
+                    .justify_between()
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_xl()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(title),
+                            )
+                            .child(div().text_sm().text_color(rgb(0x53647c)).child(format!(
+                                "{} 条请求 · 按请求时间倒序 · UTC 时间",
+                                self.total
+                            ))),
+                    )
+                    .child(
+                        Button::new("delete-requests")
+                            .label(format!("删除已选 ({})", self.selected_requests.len()))
+                            .disabled(self.selected_requests.is_empty())
+                            .on_click(cx.listener(|s, _, _, cx| {
+                                match s.store.delete_requests(
+                                    &s.selected_requests.iter().copied().collect::<Vec<_>>(),
+                                ) {
+                                    Ok(()) => {
+                                        s.selected_requests.clear();
+                                        s.refresh();
                                     }
-                                    cx.notify();
-                                })),
-                        ),
-                )
-                .child(
-                    h_flex()
-                        .px_3()
-                        .gap_3()
-                        .text_xs()
-                        .text_color(rgb(0x53647c))
-                        .child(
-                            Checkbox::new("select-page")
-                                .checked(all_selected)
-                                .on_change(cx.listener(|s, checked, _, cx| {
-                                    for r in &s.requests {
-                                        if *checked {
-                                            s.selected_requests.insert(r.id);
-                                        } else {
-                                            s.selected_requests.remove(&r.id);
-                                        }
+                                    Err(e) => s.error = e.to_string(),
+                                }
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .px_3()
+                    .gap_3()
+                    .text_xs()
+                    .text_color(rgb(0x53647c))
+                    .child(
+                        Checkbox::new("select-page")
+                            .checked(all_selected)
+                            .on_change(cx.listener(|s, checked, _, cx| {
+                                for r in &s.requests {
+                                    if *checked {
+                                        s.selected_requests.insert(r.id);
+                                    } else {
+                                        s.selected_requests.remove(&r.id);
                                     }
-                                    cx.notify();
-                                })),
-                        )
-                        .child(div().w(px(44.)).child("序号"))
-                        .child(div().w(px(156.)).child("请求时间"))
-                        .child(div().w(px(70.)).child("METHOD"))
-                        .child(div().flex_1().child("URL"))
-                        .child(div().w(px(48.)).child("头数量"))
-                        .child(div().w(px(56.)).child("BODY")),
-                );
+                                }
+                                cx.notify();
+                            })),
+                    )
+                    .child(div().w(px(44.)).child("序号"))
+                    .child(div().w(px(180.)).flex_shrink_0().child("请求时间"))
+                    .child(div().w(px(70.)).child("METHOD"))
+                    .child(div().flex_1().child("URL"))
+                    .child(div().w(px(48.)).child("头数量"))
+                    .child(div().w(px(56.)).child("BODY")),
+            );
         if self.requests.is_empty() {
             content = content.child(
                 v_flex()
@@ -845,11 +849,8 @@ impl Render for Inbox {
                     .border_color(rgb(0xe2e8f0))
                     .text_xs()
                     .text_color(rgb(0x53647c))
-                    .child(format!(
-                        "v{} · 数据保存在 ~/.roc-request-bin/data.db",
-                        env!("CARGO_PKG_VERSION")
-                    ))
-                    .child(self.update_status.lock().unwrap().clone()),
+                    .child(self.update_status.lock().unwrap().clone())
+                    .child(format!("v{}", env!("CARGO_PKG_VERSION"))),
             )
     }
 }

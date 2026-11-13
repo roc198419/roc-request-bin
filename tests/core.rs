@@ -20,16 +20,19 @@ fn db() -> (tempfile::TempDir, Store) {
 #[test]
 fn prefix_is_unique_independently_of_methods_and_name() {
     let (_dir, db) = db();
-    db.add_rule("A", "支付回调说明", " http://local/a ", &["GET".into()])
+    db.add_rule("A", " http://local/a ", &["GET".into()])
         .unwrap();
     let error = db
-        .add_rule("Different name", "", "http://local/a", &["POST".into()])
+        .add_rule(
+            "Different name",
+            "https://other.example/a",
+            &["POST".into()],
+        )
         .unwrap_err();
     assert!(error.to_string().contains("URL 前缀已存在"));
     assert_eq!(db.rules().unwrap().len(), 1);
-    assert_eq!(db.rules().unwrap()[0].description, "支付回调说明");
-    db.add_rule("Child", "", "http://local/a/b", &["GET".into()])
-        .unwrap();
+    assert_eq!(db.rules().unwrap()[0].prefix, "/a");
+    db.add_rule("Child", "/a/b", &["GET".into()]).unwrap();
 }
 #[test]
 fn matching_backfill_literal_prefix_and_cascade_are_consistent() {
@@ -40,16 +43,9 @@ fn matching_backfill_literal_prefix_and_cascade_are_consistent() {
         .unwrap();
     db.insert(&request("POST", "http://local/abc/child"))
         .unwrap();
-    let a = db
-        .add_rule("Literal", "", "http://local/a_%", &["POST".into()])
-        .unwrap();
+    let a = db.add_rule("Literal", "/a_%", &["POST".into()]).unwrap();
     let b = db
-        .add_rule(
-            "Parent",
-            "",
-            "http://local/",
-            &["POST".into(), "GET".into()],
-        )
+        .add_rule("Parent", "http://local/", &["POST".into(), "GET".into()])
         .unwrap();
     assert_eq!(db.page(Filter::Rule(a), 0).unwrap().0, 1);
     assert_eq!(db.page(Filter::Rule(b), 0).unwrap().0, 3);
@@ -85,31 +81,93 @@ fn restart_restores_settings_and_raw_bytes_and_pagination() {
 }
 
 #[test]
-fn description_migrates_existing_databases_without_losing_rules() {
+fn migration_drops_description_normalizes_rules_and_preserves_requests() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("data.db");
     let conn = rusqlite::Connection::open(&path).unwrap();
-    conn.execute_batch("CREATE TABLE rules(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL,prefix TEXT NOT NULL,methods TEXT NOT NULL);
-        INSERT INTO rules(name,prefix,methods) VALUES('old','http://local/','[\"GET\"]');").unwrap();
+    conn.execute_batch("CREATE TABLE rules(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL,description TEXT NOT NULL DEFAULT '',prefix TEXT NOT NULL,methods TEXT NOT NULL);
+        INSERT INTO rules(name,prefix,methods) VALUES('old','http://local/api','[\"GET\"]'),('same path','https://other/api','[\"POST\"]');").unwrap();
     drop(conn);
     let db = Store::open(&path).unwrap();
-    assert_eq!(db.rules().unwrap()[0].description, "");
-    db.add_rule(
-        "new",
-        "A persisted description",
-        "http://local/new",
-        &["POST".into()],
-    )
-    .unwrap();
+    assert_eq!(db.rules().unwrap().len(), 1);
+    assert_eq!(db.rules().unwrap()[0].prefix, "/api");
+    assert_eq!(db.rules().unwrap()[0].methods.len(), 2);
+    db.insert(&request("GET", "https://third.example/api/orders"))
+        .unwrap();
+    assert_eq!(db.rules().unwrap()[0].count, 1);
+    db.add_rule("new", "/new", &["POST".into()]).unwrap();
     drop(db);
     let db = Store::open(&path).unwrap();
-    assert_eq!(
-        db.rules().unwrap()[1].description,
-        "A persisted description"
-    );
+    assert_eq!(db.rules().unwrap()[1].prefix, "/new");
+    assert_eq!(db.page(Filter::All, 0).unwrap().0, 1);
     assert!(
-        db.add_rule("duplicate", "", "http://local/new", &["GET".into()])
+        db.add_rule("duplicate", "http://local/new", &["GET".into()])
             .is_err()
+    );
+    let c = rusqlite::Connection::open(&path).unwrap();
+    let columns = c
+        .prepare("PRAGMA table_info(rules)")
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(1))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert!(!columns.iter().any(|c| c == "description"));
+}
+
+#[test]
+fn matching_ignores_scheme_host_and_port_for_history_and_new_requests() {
+    let (_dir, db) = db();
+    db.insert(&request(
+        "POST",
+        "https://first.example:9443/api/orders?state=paid",
+    ))
+    .unwrap();
+    let id = db
+        .add_rule("orders", "/api/orders?state=", &["POST".into()])
+        .unwrap();
+    db.insert(&request(
+        "POST",
+        "http://second.example:8080/api/orders?state=pending",
+    ))
+    .unwrap();
+    db.insert(&request(
+        "GET",
+        "http://second.example/api/orders?state=pending",
+    ))
+    .unwrap();
+    db.insert(&request(
+        "POST",
+        "http://second.example/other/api/orders?state=pending",
+    ))
+    .unwrap();
+    assert_eq!(db.page(Filter::Rule(id), 0).unwrap().0, 2);
+    assert_eq!(db.page(Filter::Unmatched, 0).unwrap().0, 2);
+    assert!(
+        db.add_rule(
+            "same",
+            "https://third.example/api/orders?state=",
+            &["GET".into()]
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn request_time_sorts_before_id_with_stable_ties() {
+    let (_dir, db) = db();
+    let mut r = request("GET", "http://local/");
+    r.time = "2026-11-13T12:00:00.000Z".into();
+    let newest = db.insert(&r).unwrap();
+    r.time = "2026-11-13T10:00:00.000Z".into();
+    let oldest = db.insert(&r).unwrap();
+    r.time = "2026-11-13T11:00:00.000Z".into();
+    let middle = db.insert(&r).unwrap();
+    let tie = db.insert(&r).unwrap();
+    let (_, rows) = db.page(Filter::All, 0).unwrap();
+    assert_eq!(
+        rows.iter().map(|r| r.id).collect::<Vec<_>>(),
+        vec![newest, tie, middle, oldest]
     );
 }
 #[tokio::test]
